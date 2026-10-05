@@ -12,6 +12,7 @@ use Marko\AuthenticationToken\Contracts\TokenRepositoryInterface;
 use Marko\AuthenticationToken\Entity\PersonalAccessToken;
 use Marko\AuthenticationToken\Exceptions\ExpiredTokenException;
 use Marko\Routing\Http\Request;
+use Psr\Clock\ClockInterface;
 
 class TokenGuard implements GuardInterface
 {
@@ -28,6 +29,7 @@ class TokenGuard implements GuardInterface
     public function __construct(
         private readonly TokenRepositoryInterface $repository,
         private readonly Request $request,
+        private readonly ClockInterface $clock,
     ) {}
 
     public function check(): bool
@@ -73,7 +75,7 @@ class TokenGuard implements GuardInterface
         if ($token !== null && $token->expiresAt !== null) {
             $expiresAt = new DateTimeImmutable($token->expiresAt);
 
-            if ($expiresAt < new DateTimeImmutable()) {
+            if ($expiresAt < $this->clock->now()) {
                 throw ExpiredTokenException::forToken($rawToken, $expiresAt);
             }
         }

@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Marko\AuthenticationToken\Tests\Guard;
 
-use DateTimeImmutable;
 use Marko\Authentication\AuthenticatableInterface;
 use Marko\Authentication\Contracts\GuardInterface;
 use Marko\Authentication\Contracts\UserProviderInterface;
@@ -13,6 +12,7 @@ use Marko\AuthenticationToken\Entity\PersonalAccessToken;
 use Marko\AuthenticationToken\Guard\TokenGuard;
 use Marko\Routing\Http\Request;
 use Marko\Testing\Fake\FakeAuthenticatable;
+use Marko\Testing\Fake\FakeClock;
 
 function makeRequest(
     string $authHeader = '',
@@ -114,7 +114,7 @@ it('implements GuardInterface from marko/authentication', function (): void {
 it('extracts Bearer token from Authorization header', function (): void {
     $repository = makeRepository();
     $request = makeRequest('Bearer my-secret-token');
-    $guard = new TokenGuard($repository, $request);
+    $guard = new TokenGuard($repository, $request, new FakeClock('2026-01-01 12:00:00'));
 
     expect($guard->extractToken())->toBe('my-secret-token');
 });
@@ -122,7 +122,7 @@ it('extracts Bearer token from Authorization header', function (): void {
 it('returns null user when no Authorization header is present', function (): void {
     $repository = makeRepository();
     $request = makeRequest(); // no auth header
-    $guard = new TokenGuard($repository, $request);
+    $guard = new TokenGuard($repository, $request, new FakeClock('2026-01-01 12:00:00'));
     $guard->provider = makeUserProvider();
 
     expect($guard->user())->toBeNull();
@@ -131,7 +131,7 @@ it('returns null user when no Authorization header is present', function (): voi
 it('returns null user when token is not found or revoked', function (): void {
     $repository = makeRepository(); // no token found
     $request = makeRequest('Bearer some-revoked-token');
-    $guard = new TokenGuard($repository, $request);
+    $guard = new TokenGuard($repository, $request, new FakeClock('2026-01-01 12:00:00'));
     $guard->provider = makeUserProvider();
 
     expect($guard->user())->toBeNull();
@@ -147,7 +147,7 @@ it('checks token abilities for fine-grained authorization', function (): void {
 
     $repository = makeRepository($token);
     $request = makeRequest('Bearer valid-token');
-    $guard = new TokenGuard($repository, $request);
+    $guard = new TokenGuard($repository, $request, new FakeClock('2026-01-01 12:00:00'));
     $guard->provider = makeUserProvider($user);
 
     expect($guard->hasAbility('read'))->toBeTrue()
@@ -167,7 +167,7 @@ it('authenticates user by hashing token and looking up in repository', function 
     $provider = makeUserProvider($user);
 
     $request = makeRequest('Bearer ' . $rawToken);
-    $guard = new TokenGuard($repository, $request);
+    $guard = new TokenGuard($repository, $request, new FakeClock('2026-01-01 12:00:00'));
     $guard->provider = $provider;
 
     $authenticatedUser = $guard->user();
@@ -185,7 +185,7 @@ it('resolves the user for a token whose expiresAt is null', function (): void {
 
     $repository = makeRepository($token);
     $request = makeRequest('Bearer valid-token');
-    $guard = new TokenGuard($repository, $request);
+    $guard = new TokenGuard($repository, $request, new FakeClock('2026-01-01 12:00:00'));
     $guard->provider = makeUserProvider($user);
 
     expect($guard->user())->toBe($user);
@@ -193,7 +193,7 @@ it('resolves the user for a token whose expiresAt is null', function (): void {
 
 it('resolves the user for a token whose expiresAt is in the future', function (): void {
     $user = new FakeAuthenticatable(id: 1);
-    $future = (new DateTimeImmutable('+1 hour'))->format('Y-m-d H:i:s');
+    $future = '2026-01-01 13:00:00';
 
     $token = new PersonalAccessToken();
     $token->tokenableId = 1;
@@ -202,7 +202,7 @@ it('resolves the user for a token whose expiresAt is in the future', function ()
 
     $repository = makeRepository($token);
     $request = makeRequest('Bearer valid-token');
-    $guard = new TokenGuard($repository, $request);
+    $guard = new TokenGuard($repository, $request, new FakeClock('2026-01-01 12:00:00'));
     $guard->provider = makeUserProvider($user);
 
     expect($guard->user())->toBe($user);
@@ -210,7 +210,7 @@ it('resolves the user for a token whose expiresAt is in the future', function ()
 
 it('treats a token whose expiresAt is in the past as unauthenticated and returns no user', function (): void {
     $user = new FakeAuthenticatable(id: 1);
-    $past = (new DateTimeImmutable('-1 hour'))->format('Y-m-d H:i:s');
+    $past = '2026-01-01 11:00:00';
 
     $token = new PersonalAccessToken();
     $token->tokenableId = 1;
@@ -219,7 +219,43 @@ it('treats a token whose expiresAt is in the past as unauthenticated and returns
 
     $repository = makeRepository($token);
     $request = makeRequest('Bearer expired-token');
-    $guard = new TokenGuard($repository, $request);
+    $guard = new TokenGuard($repository, $request, new FakeClock('2026-01-01 12:00:00'));
+    $guard->provider = makeUserProvider($user);
+
+    expect($guard->user())->toBeNull();
+});
+
+it('accepts a token one second before it expires', function (): void {
+    $user = new FakeAuthenticatable(id: 1);
+    $token = new PersonalAccessToken();
+    $token->tokenableId = 1;
+    $token->tokenableType = FakeAuthenticatable::class;
+    $token->expiresAt = '2026-01-01 12:00:00';
+
+    $guard = new TokenGuard(
+        makeRepository($token),
+        makeRequest('Bearer almost-expired-token'),
+        new FakeClock('2026-01-01 11:59:59'),
+    );
+    $guard->provider = makeUserProvider($user);
+
+    expect($guard->user())->toBe($user);
+});
+
+it('rejects a token once the clock passes its expiry', function (): void {
+    $user = new FakeAuthenticatable(id: 1);
+    $token = new PersonalAccessToken();
+    $token->tokenableId = 1;
+    $token->tokenableType = FakeAuthenticatable::class;
+    $token->expiresAt = '2026-01-01 12:00:00';
+    $clock = new FakeClock('2026-01-01 11:59:59');
+    $clock->travel('+2 seconds');
+
+    $guard = new TokenGuard(
+        makeRepository($token),
+        makeRequest('Bearer just-expired-token'),
+        $clock,
+    );
     $guard->provider = makeUserProvider($user);
 
     expect($guard->user())->toBeNull();
@@ -227,7 +263,7 @@ it('treats a token whose expiresAt is in the past as unauthenticated and returns
 
 it('returns false from hasAbility when the resolved token has expired', function (): void {
     $user = new FakeAuthenticatable(id: 1);
-    $past = (new DateTimeImmutable('-1 hour'))->format('Y-m-d H:i:s');
+    $past = '2026-01-01 11:00:00';
 
     $token = new PersonalAccessToken();
     $token->tokenableId = 1;
@@ -237,7 +273,7 @@ it('returns false from hasAbility when the resolved token has expired', function
 
     $repository = makeRepository($token);
     $request = makeRequest('Bearer expired-token');
-    $guard = new TokenGuard($repository, $request);
+    $guard = new TokenGuard($repository, $request, new FakeClock('2026-01-01 12:00:00'));
     $guard->provider = makeUserProvider($user);
 
     expect($guard->hasAbility('read'))->toBeFalse();
@@ -285,7 +321,7 @@ it('preserves the timing-safe SHA-256 hash lookup when resolving a token', funct
     };
 
     $request = makeRequest('Bearer ' . $rawToken);
-    $guard = new TokenGuard($repository, $request);
+    $guard = new TokenGuard($repository, $request, new FakeClock('2026-01-01 12:00:00'));
     $guard->provider = makeUserProvider($user);
     $guard->user();
 
