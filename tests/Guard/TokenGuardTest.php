@@ -16,6 +16,7 @@ use Marko\AuthenticationToken\Event\TokenFailureReason;
 use Marko\AuthenticationToken\Exceptions\StatelessGuardException;
 use Marko\AuthenticationToken\Guard\TokenGuard;
 use Marko\AuthenticationToken\Http\CurrentRequest;
+use Marko\Core\Contracts\ResettableInterface;
 use Marko\Routing\Http\Request;
 use Marko\Testing\Fake\FakeAuthenticatable;
 use Marko\Testing\Fake\FakeClock;
@@ -308,6 +309,59 @@ it('re-resolves the user when the current request changes', function (): void {
     expect($first)->toBe($user)
         ->and($second)->toBeNull()
         ->and($third)->toBe($user);
+});
+
+it('forgets the resolved token on reset so a worker never holds a previous request', function (): void {
+    $user = new FakeAuthenticatable(id: 1);
+    $repository = new class (makeToken()) implements TokenRepositoryInterface
+    {
+        public int $lookups = 0;
+
+        public function __construct(
+            private readonly PersonalAccessToken $token,
+        ) {}
+
+        public function find(
+            int $id,
+        ): ?PersonalAccessToken {
+            return null;
+        }
+
+        public function findByToken(
+            string $tokenHash,
+        ): ?PersonalAccessToken {
+            $this->lookups++;
+
+            return $this->token;
+        }
+
+        public function create(
+            PersonalAccessToken $token,
+        ): PersonalAccessToken {
+            return $token;
+        }
+
+        public function revoke(
+            int $id,
+        ): void {}
+
+        public function revokeAllForUser(
+            string $type,
+            int|string $id,
+        ): void {}
+    };
+    $guard = makeGuard($repository, makeCurrentRequest('Bearer valid-token'), $user);
+
+    $guard->user();
+    $guard->user();
+    $lookupsBeforeReset = $repository->lookups;
+    $guard->reset();
+    $afterReset = $guard->user();
+
+    expect($guard)->toBeInstanceOf(ResettableInterface::class)
+        ->and($lookupsBeforeReset)->toBe(1)
+        ->and($repository->lookups)->toBe(2)
+        ->and($afterReset)->toBe($user);
 });
 
 describe('stateful methods', function (): void {

@@ -14,8 +14,10 @@ use Marko\AuthenticationToken\Event\TokenAuthenticationFailedEvent;
 use Marko\AuthenticationToken\Event\TokenFailureReason;
 use Marko\AuthenticationToken\Exceptions\StatelessGuardException;
 use Marko\AuthenticationToken\Http\CurrentRequest;
+use Marko\Core\Contracts\ResettableInterface;
 use Marko\Core\Event\EventDispatcherInterface;
 use Marko\Routing\Http\Request;
+use Override;
 use Psr\Clock\ClockInterface;
 
 /**
@@ -29,8 +31,11 @@ use Psr\Clock\ClockInterface;
  * An unknown, revoked or expired token dispatches one
  * TokenAuthenticationFailedEvent per request. A missing token and a
  * successful authentication dispatch nothing.
+ *
+ * Resettable: AuthManager caches this guard for the life of a worker, and its
+ * reset() (run between requests) forgets the request and token resolved last.
  */
-class TokenGuard implements StatelessGuardInterface
+class TokenGuard implements StatelessGuardInterface, ResettableInterface
 {
     private const string BEARER_PREFIX = 'Bearer ';
 
@@ -134,6 +139,18 @@ class TokenGuard implements StatelessGuardInterface
     public function getChallenge(): string
     {
         return 'Bearer';
+    }
+
+    /**
+     * Forget the request and token resolved last, so a long-running worker
+     * never holds a previous request's token between requests.
+     */
+    #[Override]
+    public function reset(): void
+    {
+        $this->resolvedFor = null;
+        $this->tokenResolved = false;
+        $this->resolvedToken = null;
     }
 
     public function hasAbility(
