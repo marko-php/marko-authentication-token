@@ -26,7 +26,9 @@ return [
         TokenRequestMiddleware::class,
     ],
     // Serve the 'token' guard driver. The factory is resolved when a token
-    // guard is first built, so booting never needs a TokenRepositoryInterface.
+    // guard is first built. That happens at boot only when the token guard is
+    // the #[Can] guard and a live boot checks it (marko/authorization);
+    // otherwise booting never needs a TokenRepositoryInterface.
     'boot' => function (GuardDriverRegistry $guardDriverRegistry, ContainerInterface $container): void {
         $guardDriverRegistry->extend(
             'token',
