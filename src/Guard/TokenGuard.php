@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace Marko\AuthenticationToken\Guard;
 
-use DateTimeImmutable;
 use Marko\Authentication\AuthenticatableInterface;
 use Marko\Authentication\Contracts\StatelessGuardInterface;
 use Marko\Authentication\Contracts\UserProviderInterface;
@@ -16,6 +15,7 @@ use Marko\AuthenticationToken\Exceptions\StatelessGuardException;
 use Marko\AuthenticationToken\Http\CurrentRequest;
 use Marko\Core\Contracts\ResettableInterface;
 use Marko\Core\Event\EventDispatcherInterface;
+use Marko\Database\Config\DatabaseTimezoneConfig;
 use Marko\Routing\Http\Request;
 use Override;
 use Psr\Clock\ClockInterface;
@@ -23,7 +23,8 @@ use Psr\Clock\ClockInterface;
 /**
  * Authenticates each request from its `Authorization: Bearer <token>` header
  * against the personal_access_tokens table: the token is hashed with SHA-256,
- * looked up, and rejected once its expiry has passed.
+ * looked up, and rejected once its expiry has passed. The stored expires_at is
+ * read in the database timezone (`database.timezone`, UTC by default).
  *
  * Stateless: attempt(), login(), loginById() and logout() throw a
  * StatelessGuardException. Issue and revoke tokens with TokenManager instead.
@@ -50,6 +51,7 @@ class TokenGuard implements StatelessGuardInterface, ResettableInterface
         private readonly TokenRepositoryInterface $repository,
         private readonly CurrentRequest $currentRequest,
         private readonly ClockInterface $clock,
+        private readonly DatabaseTimezoneConfig $databaseTimezoneConfig,
         public UserProviderInterface $provider {
             set {
                 $this->provider = $value;
@@ -206,7 +208,9 @@ class TokenGuard implements StatelessGuardInterface, ResettableInterface
             return null;
         }
 
-        if ($token->expiresAt !== null && new DateTimeImmutable($token->expiresAt) < $this->clock->now()) {
+        if ($token->expiresAt !== null && $this->databaseTimezoneConfig->parse(
+            $token->expiresAt,
+        ) < $this->clock->now()) {
             $this->reportFailure($request, TokenFailureReason::Expired, $token->id);
 
             return null;

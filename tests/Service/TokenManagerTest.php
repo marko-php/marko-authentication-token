@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Marko\AuthenticationToken\Tests\Service;
 
 use DateTimeImmutable;
+use DateTimeZone;
 use Marko\AuthenticationToken\Config\TokenConfig;
 use Marko\AuthenticationToken\Contracts\NewAccessToken;
 use Marko\AuthenticationToken\Contracts\TokenRepositoryInterface;
@@ -15,6 +16,7 @@ use Marko\AuthenticationToken\Event\TokenRevokedEvent;
 use Marko\AuthenticationToken\Service\TokenManager;
 use Marko\Config\ConfigRepository;
 use Marko\Config\Exceptions\ConfigException;
+use Marko\Database\Config\DatabaseTimezoneConfig;
 use Marko\Testing\Fake\FakeAuthenticatable;
 use Marko\Testing\Fake\FakeClock;
 use Marko\Testing\Fake\FakeEventDispatcher;
@@ -69,13 +71,16 @@ function tokenManager(
     FakeTokenRepository $repository = new FakeTokenRepository(),
     ?FakeEventDispatcher $eventDispatcher = null,
     ?int $expirationDays = 365,
+    FakeClock $clock = new FakeClock('2026-03-01 09:30:00+00:00'),
+    string $databaseTimezone = 'UTC',
 ): TokenManager {
     return new TokenManager(
         repository: $repository,
         config: new TokenConfig(new ConfigRepository([
             'authentication-token' => ['token_expiration_days' => $expirationDays],
         ])),
-        clock: new FakeClock('2026-03-01 09:30:00'),
+        clock: $clock,
+        databaseTimezoneConfig: DatabaseTimezoneConfig::fromName($databaseTimezone),
         eventDispatcher: $eventDispatcher,
     );
 }
@@ -176,6 +181,34 @@ it('sets createdAt from the clock', function (): void {
 
     expect($repository->created)->toHaveCount(1)
         ->and($repository->created[0]->createdAt)->toBe('2026-03-01 09:30:00');
+});
+
+it('stores an explicit expiry in the database timezone whatever the caller timezone', function (): void {
+    $repository = new FakeTokenRepository();
+    $manager = tokenManager($repository);
+
+    $manager->createToken(
+        new FakeAuthenticatable(id: 1),
+        'ci',
+        expiresAt: new DateTimeImmutable('2026-03-01 10:30:00', new DateTimeZone('America/New_York')),
+    );
+
+    expect($repository->created[0]->expiresAt)->toBe('2026-03-01 15:30:00');
+});
+
+it('stores the default expiry and created_at in the database timezone', function (): void {
+    $repository = new FakeTokenRepository();
+    $manager = tokenManager(
+        $repository,
+        expirationDays: 30,
+        clock: new FakeClock(new DateTimeImmutable('2026-03-01 09:30:00', new DateTimeZone('Asia/Tokyo'))),
+        databaseTimezone: 'Europe/Berlin',
+    );
+
+    $manager->createToken(new FakeAuthenticatable(id: 1), 'ci');
+
+    expect($repository->created[0]->createdAt)->toBe('2026-03-01 01:30:00')
+        ->and($repository->created[0]->expiresAt)->toBe('2026-03-31 02:30:00');
 });
 
 it('fails loudly on an invalid token_expiration_days even when an explicit expiresAt is given', function (): void {

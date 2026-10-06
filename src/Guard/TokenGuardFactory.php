@@ -8,6 +8,7 @@ use Marko\Authentication\Contracts\UserProviderInterface;
 use Marko\AuthenticationToken\Contracts\TokenRepositoryInterface;
 use Marko\AuthenticationToken\Http\CurrentRequest;
 use Marko\Core\Event\EventDispatcherInterface;
+use Marko\Database\Config\DatabaseTimezoneConfig;
 use Psr\Clock\ClockInterface;
 
 /**
@@ -20,6 +21,7 @@ readonly class TokenGuardFactory
         private TokenRepositoryInterface $tokenRepository,
         private CurrentRequest $currentRequest,
         private ClockInterface $clock,
+        private DatabaseTimezoneConfig $databaseTimezoneConfig,
         private EventDispatcherInterface $eventDispatcher,
     ) {}
 
@@ -31,6 +33,7 @@ readonly class TokenGuardFactory
             repository: $this->tokenRepository,
             currentRequest: $this->currentRequest,
             clock: $this->clock,
+            databaseTimezoneConfig: $this->databaseTimezoneConfig,
             provider: $provider,
             name: $name,
             eventDispatcher: $this->eventDispatcher,

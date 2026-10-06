@@ -17,6 +17,7 @@ use Marko\AuthenticationToken\Exceptions\StatelessGuardException;
 use Marko\AuthenticationToken\Guard\TokenGuard;
 use Marko\AuthenticationToken\Http\CurrentRequest;
 use Marko\Core\Contracts\ResettableInterface;
+use Marko\Database\Config\DatabaseTimezoneConfig;
 use Marko\Routing\Http\Request;
 use Marko\Testing\Fake\FakeAuthenticatable;
 use Marko\Testing\Fake\FakeClock;
@@ -113,7 +114,8 @@ function makeGuard(
     return new TokenGuard(
         repository: $repository,
         currentRequest: $currentRequest,
-        clock: new FakeClock($now),
+        clock: new FakeClock($now . '+00:00'),
+        databaseTimezoneConfig: DatabaseTimezoneConfig::fromName('UTC'),
         provider: makeUserProvider($user),
         name: $name,
         eventDispatcher: $eventDispatcher,
@@ -239,11 +241,58 @@ it('rejects a token once the clock passes its expiry', function (): void {
         repository: makeRepository(makeToken(expiresAt: '2026-01-01 12:00:00')),
         currentRequest: makeCurrentRequest('Bearer just-expired-token'),
         clock: $clock,
+        databaseTimezoneConfig: DatabaseTimezoneConfig::fromName('UTC'),
         provider: makeUserProvider(new FakeAuthenticatable(id: 1)),
     );
 
     expect($guard->user())->toBeNull();
 });
+
+/**
+ * Resolve the user with the PHP default timezone switched for the duration.
+ */
+function userUnderDefaultTimezone(
+    TokenGuard $guard,
+    string $timezone,
+): ?AuthenticatableInterface {
+    $previous = date_default_timezone_get();
+    date_default_timezone_set($timezone);
+
+    try {
+        return $guard->user();
+    } finally {
+        date_default_timezone_set($previous);
+    }
+}
+
+it(
+    'rejects a token whose stored expiry has passed when the PHP default timezone is not the database timezone',
+    function (): void {
+        $guard = makeGuard(
+            makeRepository(makeToken(expiresAt: '2026-01-01 12:00:00')),
+            makeCurrentRequest('Bearer expired-token'),
+            new FakeAuthenticatable(id: 1),
+            now: '2026-01-01 12:00:01',
+        );
+
+        expect(userUnderDefaultTimezone($guard, 'America/New_York'))->toBeNull();
+    },
+);
+
+it(
+    'accepts a token whose stored expiry is still ahead when the PHP default timezone is not the database timezone',
+    function (): void {
+        $user = new FakeAuthenticatable(id: 1);
+        $guard = makeGuard(
+            makeRepository(makeToken(expiresAt: '2026-01-01 12:00:00')),
+            makeCurrentRequest('Bearer valid-token'),
+            $user,
+            now: '2026-01-01 11:59:59',
+        );
+
+        expect(userUnderDefaultTimezone($guard, 'Asia/Tokyo'))->toBe($user);
+    },
+);
 
 it('returns false from hasAbility when the resolved token has expired', function (): void {
     $guard = makeGuard(
@@ -265,20 +314,23 @@ it('preserves the timing-safe SHA-256 hash lookup when resolving a token', funct
             private ?string &$capturedHash,
         ) {}
 
-        public function find(int $id): ?PersonalAccessToken
-        {
+        public function find(
+            int $id,
+        ): ?PersonalAccessToken {
             return null;
         }
 
-        public function findByToken(string $tokenHash): ?PersonalAccessToken
-        {
+        public function findByToken(
+            string $tokenHash,
+        ): ?PersonalAccessToken {
             $this->capturedHash = $tokenHash;
 
             return makeToken();
         }
 
-        public function create(PersonalAccessToken $token): PersonalAccessToken
-        {
+        public function create(
+            PersonalAccessToken $token,
+        ): PersonalAccessToken {
             return $token;
         }
 

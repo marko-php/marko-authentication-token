@@ -18,6 +18,7 @@ use Marko\AuthenticationToken\Event\TokenRevokedEvent;
 use Marko\Config\Exceptions\ConfigException;
 use Marko\Config\Exceptions\ConfigNotFoundException;
 use Marko\Core\Event\EventDispatcherInterface;
+use Marko\Database\Config\DatabaseTimezoneConfig;
 use Psr\Clock\ClockInterface;
 use Random\RandomException;
 use RuntimeException;
@@ -26,6 +27,10 @@ use RuntimeException;
  * Issues and revokes personal access tokens, dispatching TokenCreatedEvent,
  * TokenRevokedEvent and AllTokensRevokedEvent. Events never carry the token
  * value.
+ *
+ * expires_at and created_at are stored in the database timezone
+ * (`database.timezone`, UTC by default), whatever timezone the caller's
+ * expiresAt or the clock is in.
  */
 readonly class TokenManager
 {
@@ -33,6 +38,7 @@ readonly class TokenManager
         private TokenRepositoryInterface $repository,
         private TokenConfig $config,
         private ClockInterface $clock,
+        private DatabaseTimezoneConfig $databaseTimezoneConfig,
         private ?EventDispatcherInterface $eventDispatcher = null,
     ) {}
 
@@ -70,8 +76,8 @@ readonly class TokenManager
         $token->name = $name;
         $token->tokenHash = hash('sha256', $rawToken);
         $token->abilities = json_encode($abilities);
-        $token->expiresAt = $expiresAt?->format('Y-m-d H:i:s');
-        $token->createdAt = $now->format('Y-m-d H:i:s');
+        $token->expiresAt = $expiresAt !== null ? $this->databaseTimezoneConfig->format($expiresAt) : null;
+        $token->createdAt = $this->databaseTimezoneConfig->format($now);
 
         $saved = $this->repository->create($token);
 

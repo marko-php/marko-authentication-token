@@ -23,6 +23,7 @@ use Marko\Core\Event\EventDispatcherInterface;
 use Marko\Core\Module\DependencyResolver;
 use Marko\Core\Module\GlobalMiddlewareResolver;
 use Marko\Core\Module\ModuleManifest;
+use Marko\Database\Config\DatabaseTimezoneConfig;
 use Marko\Routing\Http\Request;
 use Marko\Routing\Http\Response;
 use Marko\Routing\RouteCollection;
@@ -90,6 +91,7 @@ function registerModule(
 function bootTokenContainer(
     InMemoryTokenRepository $tokenRepository,
     string $now = '2026-01-01 12:00:00',
+    string $databaseTimezone = 'UTC',
 ): Container {
     $packages = dirname(__DIR__, 3);
     $container = new Container();
@@ -111,6 +113,7 @@ function bootTokenContainer(
     $container->instance(UserProviderInterface::class, new FakeUserProvider([1 => new FakeAuthenticatable(id: 1)]));
     $container->instance(EventDispatcherInterface::class, new FakeEventDispatcher());
     $container->instance(ClockInterface::class, new FakeClock($now));
+    $container->instance(DatabaseTimezoneConfig::class, DatabaseTimezoneConfig::fromName($databaseTimezone));
     $container->instance(TokenRepositoryInterface::class, $tokenRepository);
 
     registerModule($container, require "$packages/authentication/module.php");
@@ -193,6 +196,26 @@ it('gives the container-resolved AuthManager the singleton registry', function (
 
     expect($container->get(GuardDriverRegistry::class)->has('token'))->toBeTrue()
         ->and($container->get(AuthManager::class)->guard('api'))->toBeInstanceOf(TokenGuard::class);
+});
+
+it('builds the token guard with the database timezone config', function (): void {
+    $tokenRepository = new InMemoryTokenRepository();
+    $token = bootTokenContainer($tokenRepository, databaseTimezone: 'Asia/Tokyo')->get(
+        TokenManager::class,
+    )->createToken(
+        user: new FakeAuthenticatable(id: 1),
+        name: 'cli',
+        expiresAt: new DateTimeImmutable('2026-01-01T12:30:00Z'),
+    )->plainTextToken;
+
+    $beforeExpiry = tokenRouter(bootTokenContainer($tokenRepository, databaseTimezone: 'Asia/Tokyo'))
+        ->handle(bearerRequest('/profile', $token));
+    $afterExpiry = tokenRouter(bootTokenContainer($tokenRepository, '2026-01-01 12:31:00', 'Asia/Tokyo'))
+        ->handle(bearerRequest('/profile', $token));
+
+    expect($tokenRepository->findByToken(hash('sha256', $token))?->expiresAt)->toBe('2026-01-01 21:30:00')
+        ->and($beforeExpiry->statusCode())->toBe(200)
+        ->and($afterExpiry->statusCode())->toBe(401);
 });
 
 it('lets a valid token through AuthMiddleware', function (): void {
