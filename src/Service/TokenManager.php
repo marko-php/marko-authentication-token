@@ -47,6 +47,10 @@ readonly class TokenManager
      * `authentication-token.token_expiration_days` days, or never when that
      * config is null. An explicit $expiresAt always wins.
      *
+     * $abilities scopes the token: an empty list or one containing '*' grants
+     * every ability of the user, any other list exactly the abilities named.
+     * The Gate (and so #[Can]) enforces them; see TokenGuard::hasAbility().
+     *
      * @param array<string> $abilities
      * @throws ConfigException|ConfigNotFoundException|RuntimeException
      */

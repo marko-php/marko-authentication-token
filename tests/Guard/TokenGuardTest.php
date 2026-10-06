@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Marko\AuthenticationToken\Tests\Guard;
 
 use Marko\Authentication\AuthenticatableInterface;
+use Marko\Authentication\Contracts\AbilityScopedGuardInterface;
 use Marko\Authentication\Contracts\GuardInterface;
 use Marko\Authentication\Contracts\StatelessGuardInterface;
 use Marko\Authentication\Contracts\UserProviderInterface;
@@ -89,14 +90,21 @@ function makeUserProvider(
     return new FakeUserProvider($user !== null ? [$user->getAuthIdentifier() => $user] : []);
 }
 
+/**
+ * A distinct user model, to prove a token issued for one model never
+ * authenticates another that shares its id.
+ */
+class TokenGuardTestAdminUser extends FakeAuthenticatable {}
+
 function makeToken(
     ?string $expiresAt = null,
     ?string $abilities = null,
+    string $tokenableType = FakeAuthenticatable::class,
 ): PersonalAccessToken {
     $token = new PersonalAccessToken();
     $token->id = 5;
     $token->tokenableId = 1;
-    $token->tokenableType = FakeAuthenticatable::class;
+    $token->tokenableType = $tokenableType;
     $token->expiresAt = $expiresAt;
     $token->abilities = $abilities;
 
@@ -180,6 +188,110 @@ it('checks token abilities for fine-grained authorization', function (): void {
     expect($guard->hasAbility('read'))->toBeTrue()
         ->and($guard->hasAbility('write'))->toBeTrue()
         ->and($guard->hasAbility('delete'))->toBeFalse();
+});
+
+it('implements AbilityScopedGuardInterface so the Gate enforces token abilities', function (): void {
+    expect(makeGuard(makeRepository(), makeCurrentRequest()))->toBeInstanceOf(AbilityScopedGuardInterface::class);
+});
+
+it('grants every ability to a token issued with an empty abilities list', function (): void {
+    $guard = makeGuard(
+        makeRepository(makeToken(abilities: json_encode([]))),
+        makeCurrentRequest('Bearer valid-token'),
+        new FakeAuthenticatable(id: 1),
+    );
+
+    expect($guard->hasAbility('read'))->toBeTrue()
+        ->and($guard->hasAbility('delete'))->toBeTrue();
+});
+
+it('grants every ability to a token whose abilities column is null', function (): void {
+    $guard = makeGuard(
+        makeRepository(makeToken(abilities: null)),
+        makeCurrentRequest('Bearer valid-token'),
+        new FakeAuthenticatable(id: 1),
+    );
+
+    expect($guard->hasAbility('anything'))->toBeTrue();
+});
+
+it('grants every ability to a token issued with the * wildcard', function (): void {
+    $guard = makeGuard(
+        makeRepository(makeToken(abilities: json_encode(['*']))),
+        makeCurrentRequest('Bearer valid-token'),
+        new FakeAuthenticatable(id: 1),
+    );
+
+    expect($guard->hasAbility('read'))->toBeTrue()
+        ->and($guard->hasAbility('posts:delete'))->toBeTrue();
+});
+
+it('matches abilities exactly, with no prefix or partial matching', function (): void {
+    $guard = makeGuard(
+        makeRepository(makeToken(abilities: json_encode(['posts:read']))),
+        makeCurrentRequest('Bearer valid-token'),
+        new FakeAuthenticatable(id: 1),
+    );
+
+    expect($guard->hasAbility('posts:read'))->toBeTrue()
+        ->and($guard->hasAbility('posts'))->toBeFalse()
+        ->and($guard->hasAbility('posts:*'))->toBeFalse()
+        ->and($guard->hasAbility('POSTS:READ'))->toBeFalse();
+});
+
+it('denies every ability when the abilities column is not a JSON array', function (): void {
+    $guard = makeGuard(
+        makeRepository(makeToken(abilities: 'not-json')),
+        makeCurrentRequest('Bearer valid-token'),
+        new FakeAuthenticatable(id: 1),
+    );
+
+    expect($guard->hasAbility('read'))->toBeFalse();
+});
+
+it('denies every ability without a bearer token', function (): void {
+    $guard = makeGuard(makeRepository(makeToken(abilities: json_encode([]))), makeCurrentRequest());
+
+    expect($guard->hasAbility('read'))->toBeFalse();
+});
+
+it('rejects a token whose tokenable_type is a different model sharing the same id', function (): void {
+    $guard = makeGuard(
+        makeRepository(makeToken(tokenableType: 'App\\Customer\\Customer')),
+        makeCurrentRequest('Bearer customer-token'),
+        new FakeAuthenticatable(id: 1),
+    );
+
+    expect($guard->user())->toBeNull()
+        ->and($guard->id())->toBeNull()
+        ->and($guard->check())->toBeFalse();
+});
+
+it('rejects a token issued for a subclass when the provider returns its parent class', function (): void {
+    $guard = makeGuard(
+        makeRepository(makeToken(tokenableType: TokenGuardTestAdminUser::class)),
+        makeCurrentRequest('Bearer admin-token'),
+        new FakeAuthenticatable(id: 1),
+    );
+
+    expect($guard->user())->toBeNull();
+});
+
+it('accepts a user that is a subclass of the token tokenable_type', function (): void {
+    $user = new TokenGuardTestAdminUser(id: 1);
+    $guard = makeGuard(
+        makeRepository(makeToken(tokenableType: FakeAuthenticatable::class)),
+        makeCurrentRequest('Bearer valid-token'),
+        $user,
+    );
+
+    expect($guard->user())->toBe($user);
+});
+
+it('returns null user when the token user no longer exists', function (): void {
+    $guard = makeGuard(makeRepository(makeToken()), makeCurrentRequest('Bearer orphan-token'));
+
+    expect($guard->user())->toBeNull();
 });
 
 it('authenticates user by hashing token and looking up in repository', function (): void {

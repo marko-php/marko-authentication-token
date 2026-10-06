@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Marko\AuthenticationToken\Guard;
 
 use Marko\Authentication\AuthenticatableInterface;
+use Marko\Authentication\Contracts\AbilityScopedGuardInterface;
 use Marko\Authentication\Contracts\StatelessGuardInterface;
 use Marko\Authentication\Contracts\UserProviderInterface;
 use Marko\AuthenticationToken\Contracts\TokenRepositoryInterface;
@@ -33,12 +34,24 @@ use Psr\Clock\ClockInterface;
  * TokenAuthenticationFailedEvent per request. A missing token and a
  * successful authentication dispatch nothing.
  *
+ * The user is loaded through the provider by the token's tokenable_id, and
+ * accepted only when it is an instance of the token's tokenable_type (the
+ * class it was issued for, or a subclass), so a token issued for one model
+ * never authenticates a different model that shares its id.
+ *
+ * Abilities: a token issued with no abilities (`[]`, or a NULL column) or
+ * with the `*` wildcard has the full authority of its user; otherwise it
+ * grants exactly the abilities listed. The Gate, and so #[Can], denies any
+ * ability the token does not grant (see AbilityScopedGuardInterface).
+ *
  * Resettable: AuthManager caches this guard for the life of a worker, and its
  * reset() (run between requests) forgets the request and token resolved last.
  */
-class TokenGuard implements StatelessGuardInterface, ResettableInterface
+class TokenGuard implements StatelessGuardInterface, AbilityScopedGuardInterface, ResettableInterface
 {
     private const string BEARER_PREFIX = 'Bearer ';
+
+    private const string WILDCARD_ABILITY = '*';
 
     /** The request the cached token was resolved for; a new request re-resolves. */
     private ?Request $resolvedFor = null;
@@ -90,7 +103,13 @@ class TokenGuard implements StatelessGuardInterface, ResettableInterface
             return null;
         }
 
-        return $this->provider->retrieveById($tokenEntity->tokenableId);
+        $user = $this->provider->retrieveById($tokenEntity->tokenableId);
+
+        if ($user === null || !is_a($user, $tokenEntity->tokenableType)) {
+            return null;
+        }
+
+        return $user;
     }
 
     public function id(): int|string|null
@@ -155,19 +174,33 @@ class TokenGuard implements StatelessGuardInterface, ResettableInterface
         $this->resolvedToken = null;
     }
 
+    /**
+     * Whether the current request's token grants the ability. A token with no
+     * abilities (`[]` or NULL) or with `*` grants every ability; otherwise the
+     * ability must be listed exactly. False without a valid token, and for an
+     * abilities column that is not a JSON array (fail closed).
+     */
     public function hasAbility(
         string $ability,
     ): bool {
         $tokenEntity = $this->resolveTokenEntity();
 
-        if ($tokenEntity === null || $tokenEntity->abilities === null) {
+        if ($tokenEntity === null) {
             return false;
+        }
+
+        if ($tokenEntity->abilities === null) {
+            return true;
         }
 
         $abilities = json_decode($tokenEntity->abilities, true);
 
         if (!is_array($abilities)) {
             return false;
+        }
+
+        if ($abilities === [] || in_array(self::WILDCARD_ABILITY, $abilities, true)) {
+            return true;
         }
 
         return in_array($ability, $abilities, true);
