@@ -104,6 +104,7 @@ function bootTokenContainer(
         ],
         'authentication.remember.cookie.prefix' => 'remember_',
         'authentication.remember.lifetime' => 60,
+        'authentication.throttle.enabled' => false,
         'authorization.default_guard' => null,
         'authentication-token.token_expiration_days' => (require "$packages/authentication-token/config/authentication-token.php")['token_expiration_days'],
     ]));
