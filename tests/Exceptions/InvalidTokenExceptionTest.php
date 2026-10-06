@@ -8,13 +8,11 @@ use Exception;
 use Marko\AuthenticationToken\Exceptions\InvalidTokenException;
 
 it('throws InvalidTokenException with context for malformed token format', function (): void {
-    $token = 'bad-token-format';
-
-    $exception = InvalidTokenException::forToken($token);
+    $exception = InvalidTokenException::forToken();
 
     expect($exception)->toBeInstanceOf(InvalidTokenException::class)
         ->and($exception)->toBeInstanceOf(Exception::class)
         ->and($exception->getMessage())->not->toBeEmpty()
-        ->and($exception->getContext())->toContain($token)
+        ->and($exception->getContext())->toBe('The presented token has an invalid or malformed format')
         ->and($exception->getSuggestion())->not->toBeEmpty();
 });

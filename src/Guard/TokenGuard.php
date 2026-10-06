@@ -6,30 +6,52 @@ namespace Marko\AuthenticationToken\Guard;
 
 use DateTimeImmutable;
 use Marko\Authentication\AuthenticatableInterface;
-use Marko\Authentication\Contracts\GuardInterface;
+use Marko\Authentication\Contracts\StatelessGuardInterface;
 use Marko\Authentication\Contracts\UserProviderInterface;
 use Marko\AuthenticationToken\Contracts\TokenRepositoryInterface;
 use Marko\AuthenticationToken\Entity\PersonalAccessToken;
-use Marko\AuthenticationToken\Exceptions\ExpiredTokenException;
+use Marko\AuthenticationToken\Event\TokenAuthenticationFailedEvent;
+use Marko\AuthenticationToken\Event\TokenFailureReason;
+use Marko\AuthenticationToken\Exceptions\StatelessGuardException;
+use Marko\AuthenticationToken\Http\CurrentRequest;
+use Marko\Core\Event\EventDispatcherInterface;
 use Marko\Routing\Http\Request;
 use Psr\Clock\ClockInterface;
 
-class TokenGuard implements GuardInterface
+/**
+ * Authenticates each request from its `Authorization: Bearer <token>` header
+ * against the personal_access_tokens table: the token is hashed with SHA-256,
+ * looked up, and rejected once its expiry has passed.
+ *
+ * Stateless: attempt(), login(), loginById() and logout() throw a
+ * StatelessGuardException. Issue and revoke tokens with TokenManager instead.
+ *
+ * An unknown, revoked or expired token dispatches one
+ * TokenAuthenticationFailedEvent per request. A missing token and a
+ * successful authentication dispatch nothing.
+ */
+class TokenGuard implements StatelessGuardInterface
 {
+    private const string BEARER_PREFIX = 'Bearer ';
+
+    /** The request the cached token was resolved for; a new request re-resolves. */
+    private ?Request $resolvedFor = null;
+
     private bool $tokenResolved = false;
 
     private ?PersonalAccessToken $resolvedToken = null;
 
-    public UserProviderInterface $provider {
-        set {
-            $this->provider = $value;
-        }
-    }
-
     public function __construct(
         private readonly TokenRepositoryInterface $repository,
-        private readonly Request $request,
+        private readonly CurrentRequest $currentRequest,
         private readonly ClockInterface $clock,
+        public UserProviderInterface $provider {
+            set {
+                $this->provider = $value;
+            }
+        },
+        private readonly string $name = 'token',
+        private readonly ?EventDispatcherInterface $eventDispatcher = null,
     ) {}
 
     public function check(): bool
@@ -44,54 +66,18 @@ class TokenGuard implements GuardInterface
 
     public function extractToken(): ?string
     {
-        $header = $this->request->header('Authorization');
+        $header = $this->currentRequest->get()?->header('Authorization');
 
-        if ($header === null || !str_starts_with($header, 'Bearer ')) {
+        if ($header === null || !str_starts_with($header, self::BEARER_PREFIX)) {
             return null;
         }
 
-        return substr($header, 7);
-    }
-
-    /**
-     * @throws ExpiredTokenException
-     */
-    private function resolveTokenEntity(): ?PersonalAccessToken
-    {
-        if ($this->tokenResolved) {
-            return $this->resolvedToken;
-        }
-
-        $this->tokenResolved = true;
-        $rawToken = $this->extractToken();
-
-        if ($rawToken === null) {
-            return null;
-        }
-
-        $tokenHash = hash('sha256', $rawToken);
-        $token = $this->repository->findByToken($tokenHash);
-
-        if ($token !== null && $token->expiresAt !== null) {
-            $expiresAt = new DateTimeImmutable($token->expiresAt);
-
-            if ($expiresAt < $this->clock->now()) {
-                throw ExpiredTokenException::forToken($rawToken, $expiresAt);
-            }
-        }
-
-        $this->resolvedToken = $token;
-
-        return $this->resolvedToken;
+        return substr($header, strlen(self::BEARER_PREFIX));
     }
 
     public function user(): ?AuthenticatableInterface
     {
-        try {
-            $tokenEntity = $this->resolveTokenEntity();
-        } catch (ExpiredTokenException) {
-            return null;
-        }
+        $tokenEntity = $this->resolveTokenEntity();
 
         if ($tokenEntity === null) {
             return null;
@@ -105,37 +91,55 @@ class TokenGuard implements GuardInterface
         return $this->user()?->getAuthIdentifier();
     }
 
+    /**
+     * @throws StatelessGuardException
+     */
     public function attempt(
         array $credentials,
     ): bool {
-        return false;
+        throw StatelessGuardException::forMethod($this->name, 'attempt');
     }
 
+    /**
+     * @throws StatelessGuardException
+     */
     public function login(
         AuthenticatableInterface $user,
-    ): void {}
+    ): void {
+        throw StatelessGuardException::forMethod($this->name, 'login');
+    }
 
+    /**
+     * @throws StatelessGuardException
+     */
     public function loginById(
         int|string $id,
     ): ?AuthenticatableInterface {
-        return null;
+        throw StatelessGuardException::forMethod($this->name, 'loginById');
     }
 
-    public function logout(): void {}
+    /**
+     * @throws StatelessGuardException
+     */
+    public function logout(): void
+    {
+        throw StatelessGuardException::forMethod($this->name, 'logout');
+    }
 
     public function getName(): string
     {
-        return 'token';
+        return $this->name;
+    }
+
+    public function getChallenge(): string
+    {
+        return 'Bearer';
     }
 
     public function hasAbility(
         string $ability,
     ): bool {
-        try {
-            $tokenEntity = $this->resolveTokenEntity();
-        } catch (ExpiredTokenException) {
-            return false;
-        }
+        $tokenEntity = $this->resolveTokenEntity();
 
         if ($tokenEntity === null || $tokenEntity->abilities === null) {
             return false;
@@ -148,5 +152,62 @@ class TokenGuard implements GuardInterface
         }
 
         return in_array($ability, $abilities, true);
+    }
+
+    /**
+     * Resolve the valid token entity for the current request, once per request.
+     */
+    private function resolveTokenEntity(): ?PersonalAccessToken
+    {
+        $request = $this->currentRequest->get();
+
+        if ($this->tokenResolved && $this->resolvedFor === $request) {
+            return $this->resolvedToken;
+        }
+
+        $this->resolvedFor = $request;
+        $this->tokenResolved = true;
+        $this->resolvedToken = $this->lookUpToken($request);
+
+        return $this->resolvedToken;
+    }
+
+    private function lookUpToken(
+        ?Request $request,
+    ): ?PersonalAccessToken {
+        $rawToken = $this->extractToken();
+
+        if ($request === null || $rawToken === null) {
+            return null;
+        }
+
+        $token = $this->repository->findByToken(hash('sha256', $rawToken));
+
+        if ($token === null) {
+            $this->reportFailure($request, TokenFailureReason::Invalid, null);
+
+            return null;
+        }
+
+        if ($token->expiresAt !== null && new DateTimeImmutable($token->expiresAt) < $this->clock->now()) {
+            $this->reportFailure($request, TokenFailureReason::Expired, $token->id);
+
+            return null;
+        }
+
+        return $token;
+    }
+
+    private function reportFailure(
+        Request $request,
+        TokenFailureReason $reason,
+        ?int $tokenId,
+    ): void {
+        $this->eventDispatcher?->dispatch(new TokenAuthenticationFailedEvent(
+            guard: $this->name,
+            reason: $reason,
+            tokenId: $tokenId,
+            ipAddress: $request->ip(),
+        ));
     }
 }

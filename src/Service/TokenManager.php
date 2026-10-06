@@ -4,20 +4,34 @@ declare(strict_types=1);
 
 namespace Marko\AuthenticationToken\Service;
 
+use DateTimeImmutable;
 use DateTimeInterface;
 use Marko\Authentication\AuthenticatableInterface;
 use Marko\AuthenticationToken\Contracts\NewAccessToken;
 use Marko\AuthenticationToken\Contracts\TokenRepositoryInterface;
 use Marko\AuthenticationToken\Entity\PersonalAccessToken;
+use Marko\AuthenticationToken\Event\AllTokensRevokedEvent;
+use Marko\AuthenticationToken\Event\TokenCreatedEvent;
+use Marko\AuthenticationToken\Event\TokenRevokedEvent;
+use Marko\Core\Event\EventDispatcherInterface;
 use Random\RandomException;
 use RuntimeException;
 
+/**
+ * Issues and revokes personal access tokens, dispatching TokenCreatedEvent,
+ * TokenRevokedEvent and AllTokensRevokedEvent. Events never carry the token
+ * value.
+ */
 readonly class TokenManager
 {
     public function __construct(
         private TokenRepositoryInterface $repository,
+        private ?EventDispatcherInterface $eventDispatcher = null,
     ) {}
 
+    /**
+     * @param array<string> $abilities
+     */
     public function createToken(
         AuthenticatableInterface $user,
         string $name,
@@ -26,28 +40,37 @@ readonly class TokenManager
     ): NewAccessToken {
         try {
             $rawToken = bin2hex(random_bytes(40));
-            $tokenHash = hash('sha256', $rawToken);
-
-            $token = new PersonalAccessToken();
-            $token->tokenableType = get_class($user);
-            $token->tokenableId = $user->getAuthIdentifier();
-            $token->name = $name;
-            $token->tokenHash = $tokenHash;
-            $token->abilities = json_encode($abilities);
-            $token->expiresAt = $expiresAt?->format('Y-m-d H:i:s');
-
-            $saved = $this->repository->create($token);
-
-            return new NewAccessToken($saved, $rawToken);
         } catch (RandomException) {
             throw new RuntimeException('Failed to generate a secure token.');
         }
+
+        $token = new PersonalAccessToken();
+        $token->tokenableType = get_class($user);
+        $token->tokenableId = $user->getAuthIdentifier();
+        $token->name = $name;
+        $token->tokenHash = hash('sha256', $rawToken);
+        $token->abilities = json_encode($abilities);
+        $token->expiresAt = $expiresAt?->format('Y-m-d H:i:s');
+
+        $saved = $this->repository->create($token);
+
+        $this->eventDispatcher?->dispatch(new TokenCreatedEvent(
+            user: $user,
+            tokenId: $saved->id,
+            name: $name,
+            abilities: array_values($abilities),
+            expiresAt: $expiresAt !== null ? DateTimeImmutable::createFromInterface($expiresAt) : null,
+        ));
+
+        return new NewAccessToken($saved, $rawToken);
     }
 
     public function revokeToken(
         int $tokenId,
     ): void {
         $this->repository->revoke($tokenId);
+
+        $this->eventDispatcher?->dispatch(new TokenRevokedEvent($tokenId));
     }
 
     public function revokeAllTokens(
@@ -57,5 +80,7 @@ readonly class TokenManager
             get_class($user),
             $user->getAuthIdentifier(),
         );
+
+        $this->eventDispatcher?->dispatch(new AllTokensRevokedEvent($user));
     }
 }
