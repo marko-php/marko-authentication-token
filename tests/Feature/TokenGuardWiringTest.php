@@ -103,6 +103,7 @@ function bootTokenContainer(
         'authentication.remember.cookie.prefix' => 'remember_',
         'authentication.remember.lifetime' => 60,
         'authorization.default_guard' => null,
+        'authentication-token.token_expiration_days' => (require "$packages/authentication-token/config/authentication-token.php")['token_expiration_days'],
     ]));
     $session = new FakeSession();
     $session->start();
@@ -167,7 +168,7 @@ function issueToken(
     InMemoryTokenRepository $tokenRepository,
     ?string $expiresAt = null,
 ): string {
-    return new TokenManager($tokenRepository)->createToken(
+    return bootTokenContainer($tokenRepository)->get(TokenManager::class)->createToken(
         user: new FakeAuthenticatable(id: 1),
         name: 'cli',
         expiresAt: $expiresAt !== null ? new DateTimeImmutable($expiresAt) : null,
@@ -241,6 +242,26 @@ it('reaches the #[Can] gate check with a valid token', function (): void {
     $response = tokenRouter(bootTokenContainer($tokenRepository))->handle(bearerRequest('/reports', $token));
 
     expect($response->statusCode())->toBe(403);
+});
+
+it('accepts a token issued without an expiry until the shipped default lifetime ends', function (): void {
+    $tokenRepository = new InMemoryTokenRepository();
+    $token = issueToken($tokenRepository);
+
+    $container = bootTokenContainer($tokenRepository, now: '2027-01-01 11:59:59');
+    $response = tokenRouter($container)->handle(bearerRequest('/profile', $token));
+
+    expect($response->statusCode())->toBe(200);
+});
+
+it('rejects a token issued without an expiry once the shipped default lifetime has passed', function (): void {
+    $tokenRepository = new InMemoryTokenRepository();
+    $token = issueToken($tokenRepository);
+
+    $container = bootTokenContainer($tokenRepository, now: '2027-01-01 12:00:01');
+    $response = tokenRouter($container)->handle(bearerRequest('/profile', $token));
+
+    expect($response->statusCode())->toBe(401);
 });
 
 it('orders TokenRequestMiddleware before AuthorizationMiddleware in the global middleware', function (): void {

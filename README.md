@@ -17,7 +17,7 @@ $newToken = $tokenManager->createToken(
     user: $user,
     name: 'mobile-app',
     abilities: ['posts:read', 'posts:write'],
-);
+); // expires after token_expiration_days (365 by default)
 
 // Plain-text token is ONLY available at creation time
 $newToken->plainTextToken;

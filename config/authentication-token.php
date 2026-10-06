@@ -8,8 +8,10 @@ return [
     | Token Expiration
     |--------------------------------------------------------------------------
     |
-    | The number of days before a personal access token expires.
-    | Set to null for tokens that never expire.
+    | The default lifetime, in days, of a personal access token created
+    | without an explicit expiresAt. TokenManager stores now + this many days
+    | as the token's expires_at. Must be a positive integer, or null for
+    | tokens that never expire unless createToken() is given an expiresAt.
     |
     */
     'token_expiration_days' => 365,

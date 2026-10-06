@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Marko\AuthenticationToken\Tests\Service;
 
 use DateTimeImmutable;
+use Marko\AuthenticationToken\Config\TokenConfig;
 use Marko\AuthenticationToken\Contracts\NewAccessToken;
 use Marko\AuthenticationToken\Contracts\TokenRepositoryInterface;
 use Marko\AuthenticationToken\Entity\PersonalAccessToken;
@@ -12,7 +13,10 @@ use Marko\AuthenticationToken\Event\AllTokensRevokedEvent;
 use Marko\AuthenticationToken\Event\TokenCreatedEvent;
 use Marko\AuthenticationToken\Event\TokenRevokedEvent;
 use Marko\AuthenticationToken\Service\TokenManager;
+use Marko\Config\ConfigRepository;
+use Marko\Config\Exceptions\ConfigException;
 use Marko\Testing\Fake\FakeAuthenticatable;
+use Marko\Testing\Fake\FakeClock;
 use Marko\Testing\Fake\FakeEventDispatcher;
 
 class FakeTokenRepository implements TokenRepositoryInterface
@@ -61,9 +65,24 @@ class FakeTokenRepository implements TokenRepositoryInterface
     }
 }
 
+function tokenManager(
+    FakeTokenRepository $repository = new FakeTokenRepository(),
+    ?FakeEventDispatcher $eventDispatcher = null,
+    ?int $expirationDays = 365,
+): TokenManager {
+    return new TokenManager(
+        repository: $repository,
+        config: new TokenConfig(new ConfigRepository([
+            'authentication-token' => ['token_expiration_days' => $expirationDays],
+        ])),
+        clock: new FakeClock('2026-03-01 09:30:00'),
+        eventDispatcher: $eventDispatcher,
+    );
+}
+
 it('creates a new personal access token with SHA-256 hashed storage', function (): void {
     $repository = new FakeTokenRepository();
-    $manager = new TokenManager($repository);
+    $manager = tokenManager($repository);
     $user = new FakeAuthenticatable(id: 1);
 
     $result = $manager->createToken($user, 'My Token');
@@ -73,8 +92,7 @@ it('creates a new personal access token with SHA-256 hashed storage', function (
 });
 
 it('returns NewAccessToken value object with plain-text token at creation time', function (): void {
-    $repository = new FakeTokenRepository();
-    $manager = new TokenManager($repository);
+    $manager = tokenManager();
     $user = new FakeAuthenticatable(id: 1);
 
     $result = $manager->createToken($user, 'Test Token');
@@ -86,7 +104,7 @@ it('returns NewAccessToken value object with plain-text token at creation time',
 
 it('assigns abilities array to created token', function (): void {
     $repository = new FakeTokenRepository();
-    $manager = new TokenManager($repository);
+    $manager = tokenManager($repository);
     $user = new FakeAuthenticatable(id: 1);
 
     $manager->createToken($user, 'Admin Token', ['read', 'write', 'delete']);
@@ -97,7 +115,7 @@ it('assigns abilities array to created token', function (): void {
 
 it('revokes a token by its id', function (): void {
     $repository = new FakeTokenRepository();
-    $manager = new TokenManager($repository);
+    $manager = tokenManager($repository);
 
     $manager->revokeToken(42);
 
@@ -107,7 +125,7 @@ it('revokes a token by its id', function (): void {
 
 it('revokes all tokens for a user', function (): void {
     $repository = new FakeTokenRepository();
-    $manager = new TokenManager($repository);
+    $manager = tokenManager($repository);
     $user = new FakeAuthenticatable(id: 7);
 
     $manager->revokeAllTokens($user);
@@ -116,27 +134,60 @@ it('revokes all tokens for a user', function (): void {
         ->and($repository->revokedForUser[FakeAuthenticatable::class])->toContain(7);
 });
 
-it('stores the provided expiresAt on the created personal access token', function (): void {
+it('stores an expiry of now plus the configured days when no expiresAt is given', function (): void {
     $repository = new FakeTokenRepository();
-    $manager = new TokenManager($repository);
-    $user = new FakeAuthenticatable(id: 1);
-    $expiresAt = new DateTimeImmutable('+1 hour');
+    $manager = tokenManager($repository, expirationDays: 30);
 
-    $manager->createToken($user, 'Expiring Token', expiresAt: $expiresAt);
+    $manager->createToken(new FakeAuthenticatable(id: 1), 'Default Lifetime Token');
 
     expect($repository->created)->toHaveCount(1)
-        ->and($repository->created[0]->expiresAt)->toBe($expiresAt->format('Y-m-d H:i:s'));
+        ->and($repository->created[0]->expiresAt)->toBe('2026-03-31 09:30:00');
 });
 
-it('leaves expiresAt null when no expiry is provided to createToken', function (): void {
+it('stores a null expiry when token_expiration_days is null', function (): void {
     $repository = new FakeTokenRepository();
-    $manager = new TokenManager($repository);
-    $user = new FakeAuthenticatable(id: 1);
+    $manager = tokenManager($repository, expirationDays: null);
 
-    $manager->createToken($user, 'Permanent Token');
+    $manager->createToken(new FakeAuthenticatable(id: 1), 'Permanent Token');
 
     expect($repository->created)->toHaveCount(1)
         ->and($repository->created[0]->expiresAt)->toBeNull();
+});
+
+it('stores the explicit expiresAt instead of the configured default', function (): void {
+    $repository = new FakeTokenRepository();
+    $manager = tokenManager($repository, expirationDays: 30);
+
+    $manager->createToken(
+        new FakeAuthenticatable(id: 1),
+        'Short Token',
+        expiresAt: new DateTimeImmutable('2026-03-01 10:30:00'),
+    );
+
+    expect($repository->created)->toHaveCount(1)
+        ->and($repository->created[0]->expiresAt)->toBe('2026-03-01 10:30:00');
+});
+
+it('sets createdAt from the clock', function (): void {
+    $repository = new FakeTokenRepository();
+    $manager = tokenManager($repository);
+
+    $manager->createToken(new FakeAuthenticatable(id: 1), 'Token');
+
+    expect($repository->created)->toHaveCount(1)
+        ->and($repository->created[0]->createdAt)->toBe('2026-03-01 09:30:00');
+});
+
+it('fails loudly on an invalid token_expiration_days even when an explicit expiresAt is given', function (): void {
+    $repository = new FakeTokenRepository();
+    $manager = tokenManager($repository, expirationDays: 0);
+
+    expect(fn (): NewAccessToken => $manager->createToken(
+        new FakeAuthenticatable(id: 1),
+        'Token',
+        expiresAt: new DateTimeImmutable('2026-03-01 10:30:00'),
+    ))->toThrow(ConfigException::class)
+        ->and($repository->created)->toBeEmpty();
 });
 
 describe('token lifecycle events', function (): void {
@@ -144,7 +195,7 @@ describe('token lifecycle events', function (): void {
         'dispatches TokenCreatedEvent with the user, name, abilities and expiry when a token is created',
         function (): void {
             $events = new FakeEventDispatcher();
-            $manager = new TokenManager(new FakeTokenRepository(), $events);
+            $manager = tokenManager(eventDispatcher: $events);
             $user = new FakeAuthenticatable(id: 3);
             $expiresAt = new DateTimeImmutable('2030-01-02 03:04:05');
 
@@ -163,9 +214,21 @@ describe('token lifecycle events', function (): void {
         },
     );
 
+    it('dispatches TokenCreatedEvent with the computed default expiry', function (): void {
+        $events = new FakeEventDispatcher();
+        $manager = tokenManager(eventDispatcher: $events, expirationDays: 30);
+
+        $manager->createToken(new FakeAuthenticatable(id: 3), 'ci');
+
+        $dispatched = $events->dispatched(TokenCreatedEvent::class);
+
+        expect($dispatched)->toHaveCount(1)
+            ->and($dispatched[0]->expiresAt?->format('Y-m-d H:i:s'))->toBe('2026-03-31 09:30:00');
+    });
+
     it('never includes the plain-text token in TokenCreatedEvent', function (): void {
         $events = new FakeEventDispatcher();
-        $manager = new TokenManager(new FakeTokenRepository(), $events);
+        $manager = tokenManager(eventDispatcher: $events);
 
         $newToken = $manager->createToken(new FakeAuthenticatable(id: 3), 'ci');
         $event = $events->dispatched(TokenCreatedEvent::class)[0];
@@ -176,7 +239,7 @@ describe('token lifecycle events', function (): void {
 
     it('dispatches TokenRevokedEvent with the token id when a token is revoked', function (): void {
         $events = new FakeEventDispatcher();
-        $manager = new TokenManager(new FakeTokenRepository(), $events);
+        $manager = tokenManager(eventDispatcher: $events);
 
         $manager->revokeToken(42);
 
@@ -188,7 +251,7 @@ describe('token lifecycle events', function (): void {
 
     it('dispatches AllTokensRevokedEvent with the user when all tokens are revoked', function (): void {
         $events = new FakeEventDispatcher();
-        $manager = new TokenManager(new FakeTokenRepository(), $events);
+        $manager = tokenManager(eventDispatcher: $events);
         $user = new FakeAuthenticatable(id: 9);
 
         $manager->revokeAllTokens($user);
