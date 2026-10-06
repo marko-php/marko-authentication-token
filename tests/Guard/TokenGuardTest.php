@@ -155,7 +155,12 @@ it('returns null user when token is not found or revoked', function (): void {
 
 it('treats a missing current request as a guest without dispatching an event', function (): void {
     $events = new FakeEventDispatcher();
-    $guard = makeGuard(makeRepository(makeToken()), new CurrentRequest(), new FakeAuthenticatable(id: 1), eventDispatcher: $events);
+    $guard = makeGuard(
+        makeRepository(makeToken()),
+        new CurrentRequest(),
+        new FakeAuthenticatable(id: 1),
+        eventDispatcher: $events,
+    );
 
     expect($guard->user())->toBeNull()
         ->and($guard->extractToken())->toBeNull()
@@ -317,7 +322,9 @@ describe('stateful methods', function (): void {
             $this->fail('Expected StatelessGuardException');
         } catch (StatelessGuardException $exception) {
             expect($exception)->toBeInstanceOf(AuthException::class)
-                ->and($exception->getMessage())->toBe("Cannot call $method() on token guard 'api': token guards are stateless")
+                ->and($exception->getMessage())->toBe(
+                    "Cannot call $method() on token guard 'api': token guards are stateless",
+                )
                 ->and($exception->getSuggestion())->toContain('TokenManager::createToken()')
                 ->and($exception->getSuggestion())->toContain('TokenManager::revokeToken()');
         }
@@ -330,30 +337,33 @@ describe('stateful methods', function (): void {
 });
 
 describe('failed authentication events', function (): void {
-    it('dispatches TokenAuthenticationFailedEvent with reason expired for an expired token without the token value', function (): void {
-        $events = new FakeEventDispatcher();
-        $guard = makeGuard(
-            makeRepository(makeToken(expiresAt: '2026-01-01 11:00:00')),
-            makeCurrentRequest('Bearer expired-secret-token'),
-            new FakeAuthenticatable(id: 1),
-            eventDispatcher: $events,
-            name: 'api',
-        );
+    it(
+        'dispatches TokenAuthenticationFailedEvent with reason expired for an expired token without the token value',
+        function (): void {
+            $events = new FakeEventDispatcher();
+            $guard = makeGuard(
+                makeRepository(makeToken(expiresAt: '2026-01-01 11:00:00')),
+                makeCurrentRequest('Bearer expired-secret-token'),
+                new FakeAuthenticatable(id: 1),
+                eventDispatcher: $events,
+                name: 'api',
+            );
 
-        $guard->check();
-        $guard->user();
-        $guard->hasAbility('read');
+            $guard->check();
+            $guard->user();
+            $guard->hasAbility('read');
 
-        $dispatched = $events->dispatched(TokenAuthenticationFailedEvent::class);
+            $dispatched = $events->dispatched(TokenAuthenticationFailedEvent::class);
 
-        expect($dispatched)->toHaveCount(1)
-            ->and($dispatched[0]->reason)->toBe(TokenFailureReason::Expired)
-            ->and($dispatched[0]->guard)->toBe('api')
-            ->and($dispatched[0]->tokenId)->toBe(5)
-            ->and($dispatched[0]->ipAddress)->toBe('203.0.113.9')
-            ->and(print_r($dispatched[0], true))->not->toContain('expired-secret-token')
-            ->and(print_r($dispatched[0], true))->not->toContain(hash('sha256', 'expired-secret-token'));
-    });
+            expect($dispatched)->toHaveCount(1)
+                ->and($dispatched[0]->reason)->toBe(TokenFailureReason::Expired)
+                ->and($dispatched[0]->guard)->toBe('api')
+                ->and($dispatched[0]->tokenId)->toBe(5)
+                ->and($dispatched[0]->ipAddress)->toBe('203.0.113.9')
+                ->and(print_r($dispatched[0], true))->not->toContain('expired-secret-token')
+                ->and(print_r($dispatched[0], true))->not->toContain(hash('sha256', 'expired-secret-token'));
+        },
+    );
 
     it('dispatches TokenAuthenticationFailedEvent with reason invalid for an unknown token', function (): void {
         $events = new FakeEventDispatcher();
@@ -372,7 +382,12 @@ describe('failed authentication events', function (): void {
     it('does not dispatch an event for a successful authentication or a missing token', function (): void {
         $events = new FakeEventDispatcher();
         $currentRequest = makeCurrentRequest('Bearer valid-token');
-        $guard = makeGuard(makeRepository(makeToken()), $currentRequest, new FakeAuthenticatable(id: 1), eventDispatcher: $events);
+        $guard = makeGuard(
+            makeRepository(makeToken()),
+            $currentRequest,
+            new FakeAuthenticatable(id: 1),
+            eventDispatcher: $events,
+        );
 
         $guard->user();
         $currentRequest->set(makeRequest());

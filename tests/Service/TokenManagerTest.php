@@ -140,25 +140,28 @@ it('leaves expiresAt null when no expiry is provided to createToken', function (
 });
 
 describe('token lifecycle events', function (): void {
-    it('dispatches TokenCreatedEvent with the user, name, abilities and expiry when a token is created', function (): void {
-        $events = new FakeEventDispatcher();
-        $manager = new TokenManager(new FakeTokenRepository(), $events);
-        $user = new FakeAuthenticatable(id: 3);
-        $expiresAt = new DateTimeImmutable('2030-01-02 03:04:05');
+    it(
+        'dispatches TokenCreatedEvent with the user, name, abilities and expiry when a token is created',
+        function (): void {
+            $events = new FakeEventDispatcher();
+            $manager = new TokenManager(new FakeTokenRepository(), $events);
+            $user = new FakeAuthenticatable(id: 3);
+            $expiresAt = new DateTimeImmutable('2030-01-02 03:04:05');
 
-        $manager->createToken($user, 'ci', ['deploy'], $expiresAt);
+            $manager->createToken($user, 'ci', ['deploy'], $expiresAt);
 
-        $dispatched = $events->dispatched(TokenCreatedEvent::class);
-        $event = $dispatched[0];
+            $dispatched = $events->dispatched(TokenCreatedEvent::class);
+            $event = $dispatched[0];
 
-        expect($dispatched)->toHaveCount(1)
-            ->and($event)->toBeInstanceOf(TokenCreatedEvent::class)
-            ->and($event->user)->toBe($user)
-            ->and($event->tokenId)->toBe(1)
-            ->and($event->name)->toBe('ci')
-            ->and($event->abilities)->toBe(['deploy'])
-            ->and($event->expiresAt?->format('Y-m-d H:i:s'))->toBe('2030-01-02 03:04:05');
-    });
+            expect($dispatched)->toHaveCount(1)
+                ->and($event)->toBeInstanceOf(TokenCreatedEvent::class)
+                ->and($event->user)->toBe($user)
+                ->and($event->tokenId)->toBe(1)
+                ->and($event->name)->toBe('ci')
+                ->and($event->abilities)->toBe(['deploy'])
+                ->and($event->expiresAt?->format('Y-m-d H:i:s'))->toBe('2030-01-02 03:04:05');
+        },
+    );
 
     it('never includes the plain-text token in TokenCreatedEvent', function (): void {
         $events = new FakeEventDispatcher();
