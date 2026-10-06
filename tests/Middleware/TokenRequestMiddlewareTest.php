@@ -7,8 +7,10 @@ namespace Marko\AuthenticationToken\Tests\Middleware;
 use Marko\AuthenticationToken\Http\CurrentRequest;
 use Marko\AuthenticationToken\Middleware\TokenRequestMiddleware;
 use Marko\Core\Contracts\ResettableInterface;
+use Marko\Routing\Attributes\RunsOnUnmatched;
 use Marko\Routing\Http\Request;
 use Marko\Routing\Http\Response;
+use ReflectionClass;
 use RuntimeException;
 
 it('hands the request to CurrentRequest while the request is handled', function (): void {
@@ -52,4 +54,10 @@ it('is resettable so long-running workers forget the request', function (): void
 
     expect($currentRequest)->toBeInstanceOf(ResettableInterface::class)
         ->and($currentRequest->get())->toBeNull();
+});
+
+it('does not run on unmatched requests, where no route can authenticate a token', function (): void {
+    $attributes = new ReflectionClass(TokenRequestMiddleware::class)->getAttributes(RunsOnUnmatched::class);
+
+    expect($attributes)->toBe([]);
 });
